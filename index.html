@@ -211,6 +211,14 @@ function initMap() {
   });
 
   renderRecent();
+  // ponytail: center on user's location when opening fresh; a shared trip has its own fitBounds
+  if (!location.hash && navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      pos => map.setView([pos.coords.latitude, pos.coords.longitude], 14, { animate: false }),
+      () => {}, { timeout: 5000, maximumAge: 5 * 60 * 1000 }
+    );
+  }
+
   const t = decodeHash(location.hash.slice(1));
   if (t) {
     $('src').value = `${t.a[0]},${t.a[1]}`;
