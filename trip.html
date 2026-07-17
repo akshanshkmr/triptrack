@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Trip</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  .card {
+    position: fixed; left: 12px; right: 12px;
+    max-width: 460px; margin: 0 auto;
+    background: #fff; border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.18);
+    padding: 14px; z-index: 5;
+  }
+  .setup { top: 12px; }
+  input, button, select {
+    width: 100%; padding: 11px 12px; font: inherit;
+    border: 1px solid #e2e2e2; border-radius: 10px;
+    background: #fff; color: #111;
+  }
+  input + input, input + select, select + button, input + button { margin-top: 8px; }
+  button.primary {
+    background: #111; color: #fff; border-color: #111;
+    font-weight: 600; cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  .live { bottom: 16px; display: none; }
+  .live.on { display: block; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%; background: #1f6feb;
+    box-shadow: 0 0 0 0 rgba(31,111,235,.6);
+    animation: pulse 1.4s infinite;
+  }
+  @keyframes pulse {
+    to { box-shadow: 0 0 0 14px rgba(31,111,235,0); }
+  }
+  .eta { font-size: 20px; font-weight: 700; color: #111; }
+  .sub { color: #666; font-size: 12px; margin-top: 2px; }
+  .spacer { flex: 1; }
+  .btn-sm {
+    width: auto; padding: 8px 14px; font-size: 12px;
+    background: #f2f2f2; border-color: #f2f2f2; color: #111;
+    cursor: pointer; font-weight: 600;
+  }
+  .err { color: #b72b2b; font-size: 12px; margin-top: 6px; min-height: 1em; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="card setup" id="setup">
+  <input id="src" placeholder="Pickup location" autocomplete="off">
+  <input id="dst" placeholder="Destination" autocomplete="off">
+  <select id="speed">
+    <option value="25">City traffic — 25 km/h</option>
+    <option value="40" selected>Normal — 40 km/h</option>
+    <option value="60">Highway — 60 km/h</option>
+    <option value="90">Fast — 90 km/h</option>
+  </select>
+  <button class="primary" id="go">Start trip</button>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="card live" id="live">
+  <div class="row">
+    <div class="dot"></div>
+    <div>
+      <div class="eta" id="eta">Arriving in —</div>
+      <div class="sub" id="sub">— km left</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn-sm" id="share">Share</button>
+  </div>
+</div>
+
+<script>
+const KEY_STORAGE = 'gmapsKey';
+let map, marker, animId, cumulative, path, totalM, totalMs, startTs;
+
+const $ = id => document.getElementById(id);
+const setup = $('setup'), live = $('live');
+
+function loadMaps(key) {
+  return new Promise((resolve, reject) => {
+    window.__mapsReady = resolve;
+    const s = document.createElement('script');
+    s.async = true;
+    s.onerror = () => reject(new Error('Failed to load Google Maps.'));
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places,geometry&callback=__mapsReady`;
+    document.head.appendChild(s);
+  });
+}
+
+async function boot() {
+  let key = localStorage.getItem(KEY_STORAGE);
+  if (!key) {
+    key = prompt('Paste your Google Maps API key\n(needs Maps JavaScript API, Places API, Directions API enabled)');
+    if (!key) return;
+    localStorage.setItem(KEY_STORAGE, key.trim());
+    key = key.trim();
+  }
+  try { await loadMaps(key); }
+  catch (e) {
+    localStorage.removeItem(KEY_STORAGE);
+    $('err').textContent = e.message + ' Reload and try again.';
+    return;
+  }
+  initMap();
+}
+
+function initMap() {
+  map = new google.maps.Map($('map'), {
+    center: { lat: 12.9716, lng: 77.5946 },
+    zoom: 13,
+    disableDefaultUI: true,
+    gestureHandling: 'greedy',
+    clickableIcons: false,
+  });
+  new google.maps.places.Autocomplete($('src'), { fields: ['formatted_address'] });
+  new google.maps.places.Autocomplete($('dst'), { fields: ['formatted_address'] });
+
+  $('go').addEventListener('click', startTrip);
+  $('share').addEventListener('click', share);
+
+  // Auto-play if the URL has trip params (this is the "share" link)
+  const p = new URLSearchParams(location.hash.slice(1));
+  const s = p.get('s'), d = p.get('d'), v = p.get('v');
+  if (s && d) {
+    $('src').value = s;
+    $('dst').value = d;
+    if (v) $('speed').value = v;
+    setTimeout(startTrip, 250);
+  }
+}
+
+async function startTrip() {
+  const src = $('src').value.trim();
+  const dst = $('dst').value.trim();
+  const kph = Math.max(5, +$('speed').value || 40);
+  $('err').textContent = '';
+  if (!src || !dst) { $('err').textContent = 'Enter pickup and destination.'; return; }
+
+  $('go').disabled = true; $('go').textContent = 'Loading route…';
+  let route;
+  try {
+    const res = await new google.maps.DirectionsService().route({
+      origin: src, destination: dst,
+      travelMode: google.maps.TravelMode.DRIVING,
+    });
+    route = res.routes[0];
+  } catch (e) {
+    $('err').textContent = 'No route found for those places.';
+    $('go').disabled = false; $('go').textContent = 'Start trip';
+    return;
+  }
+
+  path = route.overview_path;
+  totalM = route.legs.reduce((a, l) => a + l.distance.value, 0);
+  totalMs = (totalM / 1000) / kph * 3600 * 1000;
+
+  cumulative = [0];
+  for (let i = 1; i < path.length; i++) {
+    cumulative.push(
+      cumulative[i - 1] +
+      google.maps.geometry.spherical.computeDistanceBetween(path[i - 1], path[i])
+    );
+  }
+
+  new google.maps.Polyline({
+    path, map, strokeColor: '#111', strokeWeight: 5, strokeOpacity: .85,
+  });
+  new google.maps.Marker({ position: path[0], map, label: 'A' });
+  new google.maps.Marker({ position: path[path.length - 1], map, label: 'B' });
+  marker = new google.maps.Marker({
+    position: path[0], map,
+    icon: {
+      path: google.maps.SymbolPath.CIRCLE, scale: 9,
+      fillColor: '#1f6feb', fillOpacity: 1,
+      strokeColor: '#fff', strokeWeight: 3,
+    },
+  });
+
+  setup.style.display = 'none';
+  live.classList.add('on');
+  map.setZoom(16);
+  map.panTo(path[0]);
+
+  location.hash = new URLSearchParams({ s: src, d: dst, v: String(kph) }).toString();
+
+  startTs = performance.now();
+  cancelAnimationFrame(animId);
+  animId = requestAnimationFrame(step);
+}
+
+function step(now) {
+  const t = Math.min(1, (now - startTs) / totalMs);
+  const pos = positionAt(t);
+  marker.setPosition(pos);
+  map.panTo(pos);
+
+  const remM = totalM * (1 - t);
+  const remMin = Math.max(0, Math.round((totalMs * (1 - t)) / 60000));
+  $('eta').textContent = t >= 1 ? 'Arrived' : `Arriving in ${remMin || '<1'} min`;
+  $('sub').textContent = t >= 1 ? 'Trip complete' : `${(remM / 1000).toFixed(1)} km left`;
+
+  if (t < 1) animId = requestAnimationFrame(step);
+}
+
+function positionAt(t) {
+  const target = cumulative[cumulative.length - 1] * t;
+  let i = 1;
+  while (i < cumulative.length && cumulative[i] < target) i++;
+  if (i >= cumulative.length) return path[path.length - 1];
+  const segT = (target - cumulative[i - 1]) / (cumulative[i] - cumulative[i - 1]);
+  return google.maps.geometry.spherical.interpolate(path[i - 1], path[i], segT);
+}
+
+function share() {
+  navigator.clipboard.writeText(location.href).then(() => {
+    const b = $('share');
+    b.textContent = 'Copied';
+    setTimeout(() => (b.textContent = 'Share'), 1400);
+  });
+}
+
+// ponytail: self-check — interpolation math on a straight 3-point path
+(function selfCheck() {
+  const seg = [0, 100, 300]; // cumulative meters
+  const total = seg[seg.length - 1];
+  function frac(t) {
+    const target = total * t;
+    let i = 1; while (i < seg.length && seg[i] < target) i++;
+    if (i >= seg.length) return seg.length - 1;
+    return (i - 1) + (target - seg[i - 1]) / (seg[i] - seg[i - 1]);
+  }
+  console.assert(Math.abs(frac(0) - 0) < 1e-9, 'start');
+  console.assert(Math.abs(frac(1) - 2) < 1e-9, 'end');
+  console.assert(Math.abs(frac(100 / 300) - 1) < 1e-9, 'joint');
+  console.assert(Math.abs(frac(200 / 300) - 1.5) < 1e-9, 'mid of seg 2');
+})();
+
+boot();
+</script>
+</body>
+</html>

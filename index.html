@@ -1,0 +1,490 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Trip · live tracking</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9A%97%3C/text%3E%3C/svg%3E">
+<meta property="og:title" content="Trip · live tracking">
+<meta property="og:description" content="Follow the ride in real time.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#1f6feb">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fff; --fg: #111; --muted: #666; --line: #e2e2e2;
+    --chip: #f2f2f2; --map-bg: #eee;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1c1e; --fg: #f2f2f2; --muted: #9a9a9e; --line: #3a3a3c; --chip: #2c2c2e; --map-bg: #2a2a2a; }
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  #map { position: absolute; inset: 0; z-index: 0; background: var(--map-bg); }
+  .card {
+    position: fixed; left: 12px; right: 12px;
+    max-width: 460px; margin: 0 auto;
+    background: var(--bg); border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.28);
+    padding: 14px; z-index: 500;
+  }
+  .setup { top: 12px; }
+  input, button, select {
+    width: 100%; padding: 11px 12px; font: inherit;
+    border: 1px solid var(--line); border-radius: 10px;
+    background: var(--bg); color: var(--fg);
+  }
+  .field + select, .field + button, select + button, input + button { margin-top: 8px; }
+  button.primary {
+    background: var(--fg); color: var(--bg); border-color: var(--fg);
+    font-weight: 600; cursor: pointer;
+  }
+  button.primary:disabled { opacity: .5; cursor: default; }
+  .live { bottom: 16px; display: none; }
+  .live.on { display: block; }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%; background: #1f6feb;
+    box-shadow: 0 0 0 0 rgba(31,111,235,.6);
+    animation: pulse 1.4s infinite;
+  }
+  @keyframes pulse { to { box-shadow: 0 0 0 14px rgba(31,111,235,0); } }
+  .eta { font-size: 20px; font-weight: 700; color: var(--fg); }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .spacer { flex: 1; }
+  .btn-sm {
+    width: auto; padding: 8px 14px; font-size: 12px;
+    background: var(--chip); border-color: var(--chip); color: var(--fg);
+    cursor: pointer; font-weight: 600;
+  }
+  .err { color: #ff6b6b; font-size: 12px; margin-top: 6px; min-height: 1em; }
+  .field { position: relative; }
+  .field + .field { margin-top: 8px; }
+  .field input { padding-right: 40px; }
+  .locBtn {
+    position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
+    width: 32px; height: 32px; padding: 0; border-radius: 8px;
+    background: transparent; border: 0; cursor: pointer; color: var(--muted);
+    font-size: 16px; line-height: 1;
+  }
+  .locBtn:hover { background: var(--chip); color: var(--fg); }
+  .locBtn.busy { opacity: .5; cursor: wait; }
+  .suggest {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+    margin-top: 4px; max-height: 220px; overflow-y: auto;
+    box-shadow: 0 8px 20px rgba(0,0,0,.25); display: none;
+  }
+  .suggest.on { display: block; }
+  .suggest > div {
+    padding: 9px 12px; cursor: pointer; font-size: 13px;
+    border-bottom: 1px solid var(--line); color: var(--fg);
+  }
+  .suggest > div:last-child { border-bottom: 0; }
+  .suggest > div:hover, .suggest > div.hi { background: var(--chip); }
+  .progress { height: 3px; background: var(--chip); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+  .progress > i { display: block; height: 100%; width: 0%; background: #1f6feb; transition: width .2s linear; }
+  .carIcon svg { display: block; filter: drop-shadow(0 2px 4px rgba(0,0,0,.6)); transform-origin: center; transition: transform .2s linear; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div class="card setup" id="setup">
+  <div class="field"><input id="src" placeholder="Pickup (address or 'lat,lng')" autocomplete="off"><button class="locBtn" data-for="src" title="Use current location">📍</button><div class="suggest" id="src-suggest"></div></div>
+  <div class="field"><input id="dst" placeholder="Destination (address or 'lat,lng')" autocomplete="off"><button class="locBtn" data-for="dst" title="Use current location">📍</button><div class="suggest" id="dst-suggest"></div></div>
+  <select id="speed">
+    <option value="25">City traffic — 25 km/h</option>
+    <option value="40" selected>Normal — 40 km/h</option>
+    <option value="60">Highway — 60 km/h</option>
+    <option value="120">Fast preview — 120 km/h</option>
+  </select>
+  <button class="primary" id="go">Start trip</button>
+  <div class="err" id="err"></div>
+</div>
+
+<div class="card live" id="live">
+  <div class="row">
+    <div class="dot" id="dot"></div>
+    <div>
+      <div class="eta" id="eta">Arriving in —</div>
+      <div class="sub" id="sub">— km left</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="btn-sm" id="share">Share</button>
+  </div>
+  <div class="progress"><i id="bar"></i></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+let map, marker, polyline, path = [], cumulative = [], totalM = 0, totalMs = 0, animId;
+let srcMarker, dstMarker;
+const isDark = matchMedia('(prefers-color-scheme: dark)').matches;
+const ROUTE_COLOR = isDark ? '#ffffff' : '#111111';
+// ponytail: trip is a pure function of (endpoints, speed, startedAt). Any viewer computes the
+// current position from wall-clock elapsed against a seeded jam schedule — no backend needed.
+let tripStartedAt = 0, jams = [];
+
+function initMap() {
+  map = L.map('map', { zoomControl: false, attributionControl: true }).setView([12.9716, 77.5946], 13);
+  // ponytail: CartoDB tiles — dark-matter/positron are the closest key-free match to Uber's map look
+  L.tileLayer(`https://{s}.basemaps.cartocdn.com/${isDark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png`, {
+    maxZoom: 20, subdomains: 'abcd',
+    attribution: '&copy; <a href="https://openstreetmap.org">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  }).addTo(map);
+  // ponytail: Leaflet caches container size at init; force a recompute after layout
+  setTimeout(() => map.invalidateSize(), 0);
+  window.addEventListener('resize', () => map.invalidateSize());
+
+  $('go').addEventListener('click', startTrip);
+  $('share').addEventListener('click', share);
+  document.querySelectorAll('.locBtn').forEach(b => b.addEventListener('click', () => useCurrentLocation(b)));
+  ['src', 'dst'].forEach(id => {
+    const inp = $(id);
+    let timer;
+    inp.addEventListener('input', () => {
+      clearPin(id);
+      $(id + '-suggest').classList.remove('on');
+      clearTimeout(timer);
+      // ponytail: debounce 500ms — Nominatim's usage policy is ~1 req/s
+      timer = setTimeout(() => searchSuggest(id), 500);
+    });
+    inp.addEventListener('keydown', async e => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      clearTimeout(timer);
+      const q = inp.value.trim();
+      if (!q) return;
+      try {
+        const p = await geocode(q);
+        placePin(id, p.lat, p.lon);
+        $(id + '-suggest').classList.remove('on');
+      } catch (err) { $('err').textContent = err.message; }
+    });
+    // delay so a click on a suggestion row registers before the box hides
+    inp.addEventListener('blur', () => setTimeout(() => $(id + '-suggest').classList.remove('on'), 150));
+  });
+
+  const t = decodeHash(location.hash.slice(1));
+  if (t) {
+    $('src').value = `${t.a[0]},${t.a[1]}`;
+    $('dst').value = `${t.b[0]},${t.b[1]}`;
+    if (t.v) $('speed').value = String(t.v);
+    setTimeout(startTrip, 250);
+  }
+}
+
+// ponytail: base64url of a compact JSON blob — opaque enough that endpoints aren't in the URL as plaintext
+const encodeHash = o => btoa(JSON.stringify(o)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const decodeHash = h => { try { return h ? JSON.parse(atob(h.replace(/-/g, '+').replace(/_/g, '/'))) : null; } catch { return null; } };
+
+function useCurrentLocation(btn) {
+  const which = btn.dataset.for;
+  if (!navigator.geolocation) { $('err').textContent = 'Geolocation not supported.'; return; }
+  btn.classList.add('busy');
+  $('err').textContent = '';
+  navigator.geolocation.getCurrentPosition(async pos => {
+    const { latitude: lat, longitude: lon } = pos.coords;
+    placePin(which, lat, lon);
+    const inp = $(which);
+    inp.value = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+    // ponytail: reverse-geocode for a friendly label — best-effort; keep lat,lng on failure
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`, {
+        headers: { 'Accept-Language': 'en' },
+      });
+      const j = await r.json();
+      if (j.display_name) inp.value = j.display_name;
+    } catch {}
+    btn.classList.remove('busy');
+  }, err => {
+    btn.classList.remove('busy');
+    $('err').textContent = err.code === 1 ? 'Location permission denied.' : 'Could not get location.';
+  }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 });
+}
+
+function placePin(which, lat, lon) {
+  const ll = [lat, lon];
+  const label = which === 'src' ? 'A' : 'B';
+  clearPin(which);
+  const m = L.marker(ll).addTo(map).bindTooltip(label, { permanent: true, direction: 'top' });
+  if (which === 'src') srcMarker = m; else dstMarker = m;
+  const pts = [srcMarker, dstMarker].filter(Boolean).map(x => x.getLatLng());
+  if (pts.length === 2) map.fitBounds(L.latLngBounds(pts), { padding: [80, 80] });
+  else map.setView(ll, 14);
+}
+
+async function searchSuggest(which) {
+  const inp = $(which), q = inp.value.trim();
+  const box = $(which + '-suggest');
+  box.innerHTML = ''; box.classList.remove('on');
+  if (!q) return;
+  // lat,lng typed directly — skip network, place pin
+  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (m) { placePin(which, +m[1], +m[2]); return; }
+  $('err').textContent = '';
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(q)}`, {
+      headers: { 'Accept-Language': 'en' },
+    });
+    const arr = await r.json();
+    if (!arr.length) { $('err').textContent = 'No results'; return; }
+    for (const it of arr) {
+      const row = document.createElement('div');
+      row.textContent = it.display_name;
+      // ponytail: pointerdown fires on mouse, touch, and pen — before the input's blur closes the box
+      row.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        inp.value = it.display_name;
+        placePin(which, +it.lat, +it.lon);
+        box.classList.remove('on');
+      });
+      box.appendChild(row);
+    }
+    box.classList.add('on');
+  } catch (e) { $('err').textContent = e.message; }
+}
+
+function clearPin(which) {
+  const m = which === 'src' ? srcMarker : dstMarker;
+  if (m) m.remove();
+  if (which === 'src') srcMarker = null; else dstMarker = null;
+}
+
+async function geocode(q) {
+  const m = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (m) return { lat: +m[1], lon: +m[2] };
+  const r = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(q)}`, {
+    headers: { 'Accept-Language': 'en' },
+  });
+  const arr = await r.json();
+  if (!arr.length) throw new Error(`Not found: ${q}`);
+  return { lat: +arr[0].lat, lon: +arr[0].lon };
+}
+
+async function routeOSRM(a, b) {
+  const url = `https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=full&geometries=geojson`;
+  const r = await fetch(url);
+  const j = await r.json();
+  if (!j.routes || !j.routes.length) throw new Error('No route found');
+  const rt = j.routes[0];
+  return {
+    coords: rt.geometry.coordinates.map(([lon, lat]) => [lat, lon]),
+    distanceM: rt.distance,
+  };
+}
+
+// ponytail: mulberry32 — 5-line PRNG so all viewers get the same jam schedule from one seed
+function mulberry32(seed) {
+  return function () {
+    let t = seed = (seed + 0x6D2B79F5) >>> 0;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function generateJams(seed, baseDurationMs) {
+  const rng = mulberry32(seed >>> 0);
+  const out = [];
+  let t = 0;
+  const horizon = baseDurationMs * 3;
+  while (t < horizon) {
+    t += -Math.log(1 - rng()) * 8000;
+    if (t >= horizon) break;
+    const dur = 3000 + rng() * 7000;
+    const factor = 0.1 + rng() * 0.15;
+    out.push({ start: t, end: t + dur, factor });
+    t += dur;
+  }
+  return out;
+}
+
+// integrate speed(τ) from 0 to virtualNow, where speed = baseMpMs * jamFactor
+function distanceAt(virtualNow) {
+  const baseMpMs = totalM / totalMs;
+  let dist = 0, prev = 0;
+  for (const j of jams) {
+    if (j.start >= virtualNow) break;
+    if (j.start > prev) { dist += (j.start - prev) * baseMpMs; prev = j.start; }
+    const segEnd = Math.min(j.end, virtualNow);
+    dist += (segEnd - prev) * baseMpMs * j.factor;
+    prev = segEnd;
+    if (segEnd < j.end) return Math.min(dist, totalM);
+  }
+  if (prev < virtualNow) dist += (virtualNow - prev) * baseMpMs;
+  return Math.min(dist, totalM);
+}
+
+function currentJam(virtualNow) {
+  for (const j of jams) {
+    if (j.end <= virtualNow) continue;
+    if (j.start > virtualNow) return null;
+    return j;
+  }
+  return null;
+}
+
+async function startTrip() {
+  $('err').textContent = '';
+  const src = $('src').value.trim();
+  const dst = $('dst').value.trim();
+  const kph = Math.max(5, +$('speed').value || 40);
+  if (!src || !dst) { $('err').textContent = 'Enter pickup and destination.'; return; }
+
+  $('go').disabled = true; $('go').textContent = 'Loading route…';
+  try {
+    const endpoint = (mk, q) => mk ? Promise.resolve({ lat: mk.getLatLng().lat, lon: mk.getLatLng().lng }) : geocode(q);
+    const [a, b] = await Promise.all([endpoint(srcMarker, src), endpoint(dstMarker, dst)]);
+    const rt = await routeOSRM(a, b);
+    path = rt.coords;
+    totalM = rt.distanceM;
+  } catch (e) {
+    $('err').textContent = e.message;
+    $('go').disabled = false; $('go').textContent = 'Start trip';
+    return;
+  }
+  totalMs = (totalM / 1000) / kph * 3600 * 1000;
+
+  cumulative = [0];
+  for (let i = 1; i < path.length; i++) {
+    cumulative.push(cumulative[i - 1] + haversine(path[i - 1], path[i]));
+  }
+
+  if (polyline) polyline.remove();
+  clearPin('src'); clearPin('dst');
+  polyline = L.polyline(path, { color: ROUTE_COLOR, weight: 5, opacity: .9 }).addTo(map);
+  L.marker(path[0]).addTo(map).bindTooltip('A', { permanent: true, direction: 'top' });
+  L.marker(path[path.length - 1]).addTo(map).bindTooltip('B', { permanent: true, direction: 'top' });
+
+  // ponytail: top-view car SVG — white body, dark cabin, drop-shadow via CSS
+  const carSvg = `<svg viewBox="0 0 24 32" width="22" height="28" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3" y="2" width="18" height="28" rx="5" ry="6" fill="#fff" stroke="#111" stroke-width="1.5"/>
+    <rect x="6" y="6" width="12" height="7" rx="1.5" fill="#1c1c1e"/>
+    <rect x="6" y="18" width="12" height="6" rx="1.5" fill="#1c1c1e" opacity=".8"/>
+  </svg>`;
+  const carIcon = L.divIcon({ className: 'carIcon', html: carSvg, iconSize: [22, 28], iconAnchor: [11, 14] });
+  if (marker) marker.remove();
+  marker = L.marker(path[0], { icon: carIcon }).addTo(map);
+
+  $('setup').style.display = 'none';
+  $('live').classList.add('on');
+  $('share').style.display = '';
+  map.fitBounds(polyline.getBounds(), { padding: [60, 60] });
+
+  const parsed = decodeHash(location.hash.slice(1));
+  const isReplay = !!(parsed && parsed.t);
+  tripStartedAt = isReplay ? parsed.t : Date.now();
+  jams = generateJams(tripStartedAt & 0xffffffff, totalMs);
+
+  if (!isReplay) {
+    const p0 = path[0], pn = path[path.length - 1];
+    location.hash = encodeHash({
+      a: [+p0[0].toFixed(5), +p0[1].toFixed(5)],
+      b: [+pn[0].toFixed(5), +pn[1].toFixed(5)],
+      v: kph, t: tripStartedAt,
+    });
+  }
+
+  const elapsed = Date.now() - tripStartedAt;
+  if (distanceAt(elapsed) >= totalM) { showEnded(); return; }
+  const init = positionAt(distanceAt(elapsed) / totalM);
+  marker.setLatLng(init.pos);
+  orientCar(init.head);
+
+  // ponytail: setInterval instead of rAF — headless/hidden tabs throttle rAF to nothing
+  clearInterval(animId);
+  animId = setInterval(step, 33);
+}
+
+function step() {
+  const virtualNow = Date.now() - tripStartedAt;
+  const d = distanceAt(virtualNow);
+  const t = d / totalM;
+  if (t >= 1) { showEnded(); return; }
+  const { pos, head } = positionAt(t);
+  marker.setLatLng(pos);
+  orientCar(head);
+
+  const jam = currentJam(virtualNow);
+  const jammed = !!jam;
+  const factor = jammed ? jam.factor : 1;
+  const baseMpMs = totalM / totalMs;
+  const remM = totalM - d;
+  const remMin = Math.max(0, Math.round(remM / Math.max(baseMpMs * factor, 1e-6) / 60000));
+
+  $('eta').textContent = `Arriving in ${humanizeMin(remMin)}${jammed ? ' 🚧' : ''}`;
+  $('sub').textContent = `${(remM / 1000).toFixed(1)} km left${jammed ? ' • traffic' : ''}`;
+  $('bar').style.width = (t * 100) + '%';
+  $('dot').style.background = jammed ? '#e0a800' : '#1f6feb';
+}
+
+function showEnded() {
+  clearInterval(animId);
+  $('setup').style.display = 'none';
+  $('live').classList.add('on');
+  if (marker && path.length) marker.setLatLng(path[path.length - 1]);
+  $('eta').textContent = '🏁 This trip has ended';
+  $('sub').textContent = `${(totalM / 1000).toFixed(1)} km · trip complete`;
+  $('bar').style.width = '100%';
+  $('dot').style.background = '';
+  $('share').style.display = 'none';
+}
+
+function positionAt(t) {
+  const target = cumulative[cumulative.length - 1] * t;
+  let i = 1;
+  while (i < cumulative.length && cumulative[i] < target) i++;
+  if (i >= cumulative.length) {
+    const a = path[path.length - 2] || path[0], b = path[path.length - 1];
+    return { pos: b, head: bearingBetween(a, b) };
+  }
+  const a = path[i - 1], b = path[i];
+  const segT = (target - cumulative[i - 1]) / (cumulative[i] - cumulative[i - 1]);
+  return { pos: [a[0] + (b[0] - a[0]) * segT, a[1] + (b[1] - a[1]) * segT], head: bearingBetween(a, b) };
+}
+
+// bearing 0 = north, 90 = east; SVG car nose points up so rotate(deg) aligns it with the bearing
+function bearingBetween([lat1, lon1], [lat2, lon2]) {
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return Math.atan2(y, x) * 180 / Math.PI;
+}
+
+function humanizeMin(min) {
+  if (min < 1) return '<1 min';
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60), m = min - h * 60;
+  return m ? `${h}h ${m}m` : `${h}h`;
+}
+
+function orientCar(head) {
+  const svg = marker && marker._icon && marker._icon.firstElementChild;
+  if (svg) svg.style.transform = `rotate(${head}deg)`;
+}
+
+// ponytail: haversine in meters — good enough for city-scale interpolation
+function haversine([lat1, lon1], [lat2, lon2]) {
+  const R = 6371000, toRad = d => d * Math.PI / 180;
+  const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function share() {
+  navigator.clipboard.writeText(location.href).then(() => {
+    const b = $('share'); b.textContent = 'Copied';
+    setTimeout(() => (b.textContent = 'Share'), 1400);
+  });
+}
+
+initMap();
+</script>
+</body>
+</html>
