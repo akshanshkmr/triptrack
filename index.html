@@ -68,6 +68,16 @@
     cursor: pointer; font-weight: 600;
   }
   .err { color: #ff6b6b; font-size: 12px; margin-top: 6px; min-height: 1em; }
+  .recent { margin-top: 12px; }
+  .recent:empty { display: none; }
+  .recent-h { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 6px; }
+  .recent-row {
+    display: block; padding: 8px 10px; margin-top: 4px;
+    background: var(--chip); border-radius: 8px; cursor: pointer;
+    color: var(--fg); text-decoration: none; font-size: 13px;
+  }
+  .recent-row:hover { opacity: .85; }
+  .recent-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .field { position: relative; }
   .field + .field { margin-top: 8px; }
   .field input { padding-right: 40px; }
@@ -111,6 +121,7 @@
   </select>
   <button class="primary" id="go">Start trip</button>
   <div class="err" id="err"></div>
+  <div class="recent" id="recent"></div>
 </div>
 
 <div class="card live" id="live">
@@ -177,6 +188,7 @@ function initMap() {
     inp.addEventListener('blur', () => setTimeout(() => $(id + '-suggest').classList.remove('on'), 150));
   });
 
+  renderRecent();
   const t = decodeHash(location.hash.slice(1));
   if (t) {
     $('src').value = `${t.a[0]},${t.a[1]}`;
@@ -396,6 +408,7 @@ async function startTrip() {
       b: [+pn[0].toFixed(5), +pn[1].toFixed(5)],
       v: kph, t: tripStartedAt,
     });
+    saveRecent({ hash: location.hash.slice(1), a: src, b: dst, t: tripStartedAt });
   }
 
   const elapsed = Date.now() - tripStartedAt;
@@ -463,6 +476,44 @@ function bearingBetween([lat1, lon1], [lat2, lon2]) {
   const y = Math.sin(Δλ) * Math.cos(φ2);
   const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
   return Math.atan2(y, x) * 180 / Math.PI;
+}
+
+const RECENT_KEY = 'triptrack:recent';
+const RECENT_MAX = 6;
+
+function saveRecent(entry) {
+  try {
+    const list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]').filter(x => x.hash !== entry.hash);
+    list.unshift(entry);
+    localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX)));
+    renderRecent();
+  } catch {}
+}
+
+function renderRecent() {
+  const box = $('recent');
+  box.innerHTML = '';
+  let list;
+  try { list = JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return; }
+  if (!list.length) return;
+  const h = document.createElement('div');
+  h.className = 'recent-h'; h.textContent = 'Recent trips';
+  box.appendChild(h);
+  const abbr = s => (s || '?').length > 24 ? s.slice(0, 22) + '…' : (s || '?');
+  const ago = ms => {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return `${s}s ago`;
+    const m = Math.floor(s / 60); if (m < 60) return `${m}m ago`;
+    const hr = Math.floor(m / 60); if (hr < 24) return `${hr}h ago`;
+    return `${Math.floor(hr / 24)}d ago`;
+  };
+  for (const it of list) {
+    const row = document.createElement('a');
+    row.className = 'recent-row'; row.href = '#' + it.hash;
+    row.innerHTML = `<div>${abbr(it.a)} → ${abbr(it.b)}</div><div class="recent-sub">${ago(Date.now() - it.t)}</div>`;
+    row.addEventListener('click', e => { e.preventDefault(); location.hash = it.hash; location.reload(); });
+    box.appendChild(row);
+  }
 }
 
 function humanizeMin(min) {
