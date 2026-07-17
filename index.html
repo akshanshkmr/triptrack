@@ -168,17 +168,16 @@ let tripStartedAt = 0, jams = [];
 function initMap() {
   map = L.map('map', { zoomControl: false, attributionControl: true }).setView([12.9716, 77.5946], 13);
   // ponytail: CartoDB tiles — dark-matter/positron are the closest key-free match to Uber's map look
-  L.tileLayer(`https://{s}.basemaps.cartocdn.com/${isDark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}{r}.png`, {
-    maxZoom: 20, subdomains: 'abcd',
+  // (dropped {r} retina — some mobile browsers 404 on @2x tiles; standard tiles are more reliable)
+  const tiles = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${isDark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}.png`, {
+    maxZoom: 19, subdomains: 'abcd', crossOrigin: true,
     attribution: '&copy; <a href="https://openstreetmap.org">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
   }).addTo(map);
-  // ponytail: Leaflet caches container size at init; recompute after layout AND on any viewport change
-  const bump = () => map.invalidateSize();
-  requestAnimationFrame(() => { bump(); setTimeout(bump, 300); });
-  window.addEventListener('resize', bump);
-  window.addEventListener('orientationchange', bump);
+  // ponytail: ResizeObserver catches every container size change (initial layout, safe-area settles,
+  // Android soft-keyboard, iOS URL-bar). Cheaper and more reliable than juggling five event listeners.
+  const bump = () => { map.invalidateSize(); tiles.redraw(); };
+  new ResizeObserver(bump).observe($('map'));
   document.addEventListener('visibilitychange', () => { if (!document.hidden) bump(); });
-  if (window.visualViewport) window.visualViewport.addEventListener('resize', bump);
 
   $('go').addEventListener('click', startTrip);
   $('share').addEventListener('click', share);
