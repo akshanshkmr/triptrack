@@ -170,7 +170,7 @@ function initMap() {
   // ponytail: CartoDB tiles — dark-matter/positron are the closest key-free match to Uber's map look
   // (dropped {r} retina — some mobile browsers 404 on @2x tiles; standard tiles are more reliable)
   const tiles = L.tileLayer(`https://{s}.basemaps.cartocdn.com/${isDark ? 'dark_all' : 'light_all'}/{z}/{x}/{y}.png`, {
-    maxZoom: 19, subdomains: 'abcd', crossOrigin: true,
+    maxZoom: 19, subdomains: 'abcd',
     attribution: '&copy; <a href="https://openstreetmap.org">OSM</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
   }).addTo(map);
   // ponytail: ResizeObserver catches every container size change (initial layout, safe-area settles,
@@ -255,9 +255,10 @@ function placePin(which, lat, lon) {
   const m = L.circleMarker(ll, { radius: 5, color: '#000', weight: 2, fillColor: '#fff', fillOpacity: 1 }).addTo(map);
   if (which === 'src') srcMarker = m; else dstMarker = m;
   const pts = [srcMarker, dstMarker].filter(Boolean).map(x => x.getLatLng());
-  // extra bottom padding so pins don't hide behind the setup card at bottom of screen
-  if (pts.length === 2) map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 60], paddingBottomRight: [40, 320] });
-  else map.setView(ll, 14);
+  // ponytail: animate:false avoids the intermediate-zoom tile-request flurry that shows as grey
+  // squares on slow mobile networks; also reserve bottom space for the setup sheet
+  if (pts.length === 2) map.fitBounds(L.latLngBounds(pts), { paddingTopLeft: [40, 60], paddingBottomRight: [40, 320], animate: false });
+  else map.setView(ll, 14, { animate: false });
 }
 
 async function searchSuggest(which) {
@@ -413,7 +414,7 @@ async function startTrip() {
   $('setup').style.display = 'none';
   $('live').classList.add('on');
   $('share').style.display = '';
-  map.fitBounds(polyline.getBounds(), { padding: [60, 60] });
+  map.fitBounds(polyline.getBounds(), { padding: [60, 60], animate: false });
 
   const parsed = decodeHash(location.hash.slice(1));
   const isReplay = !!(parsed && parsed.t);
