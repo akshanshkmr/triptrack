@@ -38,16 +38,27 @@
     box-shadow: 0 8px 30px rgba(0,0,0,.28);
     padding: 14px; z-index: 500;
   }
-  .setup { bottom: 16px; }
+  .setup {
+    left: 0; right: 0; bottom: 0; max-width: 520px;
+    padding: 18px 18px max(18px, env(safe-area-inset-bottom));
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -10px 40px rgba(0,0,0,.4);
+  }
+  .setup::before {
+    content: ''; display: block; width: 36px; height: 4px;
+    background: var(--line); border-radius: 2px; margin: -6px auto 14px;
+  }
   input, button, select {
-    width: 100%; padding: 11px 12px; font: inherit;
-    border: 1px solid var(--line); border-radius: 10px;
+    width: 100%; padding: 13px 14px; font-size: 16px; line-height: 1.4;
+    font-family: inherit;
+    border: 1px solid var(--line); border-radius: 12px;
     background: var(--bg); color: var(--fg);
   }
   .field + select, .field + button, select + button, input + button { margin-top: 8px; }
   button.primary {
     background: var(--fg); color: var(--bg); border-color: var(--fg);
-    font-weight: 600; cursor: pointer;
+    font-weight: 700; font-size: 15px; padding: 15px; cursor: pointer;
+    margin-top: 12px;
   }
   button.primary:disabled { opacity: .5; cursor: default; }
   .live { bottom: 16px; display: none; }
@@ -79,8 +90,14 @@
   .recent-row:hover { opacity: .85; }
   .recent-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
   .field { position: relative; }
-  .field + .field { margin-top: 8px; }
-  .field input { padding-right: 40px; }
+  .field + .field { margin-top: 10px; }
+  .field input { padding-left: 34px; padding-right: 44px; }
+  .field::before {
+    content: ''; position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+    width: 9px; height: 9px; border-radius: 50%; pointer-events: none; z-index: 2;
+  }
+  .field:nth-of-type(1)::before { background: #22c55e; }
+  .field:nth-of-type(2)::before { background: #ef4444; }
   .locBtn {
     position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
     width: 32px; height: 32px; padding: 0; border-radius: 8px;
@@ -111,8 +128,8 @@
 <div id="map"></div>
 
 <div class="card setup" id="setup">
-  <div class="field"><input id="src" placeholder="Pickup (address or 'lat,lng')" autocomplete="off"><button class="locBtn" data-for="src" title="Use current location">📍</button><div class="suggest" id="src-suggest"></div></div>
-  <div class="field"><input id="dst" placeholder="Destination (address or 'lat,lng')" autocomplete="off"><button class="locBtn" data-for="dst" title="Use current location">📍</button><div class="suggest" id="dst-suggest"></div></div>
+  <div class="field"><input id="src" placeholder="Pickup" autocomplete="off"><button class="locBtn" data-for="src" title="Use current location">📍</button><div class="suggest" id="src-suggest"></div></div>
+  <div class="field"><input id="dst" placeholder="Where to?" autocomplete="off"><button class="locBtn" data-for="dst" title="Use current location">📍</button><div class="suggest" id="dst-suggest"></div></div>
   <select id="speed">
     <option value="25">City traffic — 25 km/h</option>
     <option value="40" selected>Normal — 40 km/h</option>
@@ -166,10 +183,11 @@ function initMap() {
     const inp = $(id);
     let timer;
     inp.addEventListener('input', () => {
-      clearPin(id);
       $(id + '-suggest').classList.remove('on');
       clearTimeout(timer);
-      // ponytail: debounce 500ms — Nominatim's usage policy is ~1 req/s
+      // ponytail: only clear pin when field is emptied; letting user edit query without wiping the placed pin
+      if (!inp.value.trim()) { clearPin(id); return; }
+      // debounce 500ms — Nominatim's usage policy is ~1 req/s
       timer = setTimeout(() => searchSuggest(id), 500);
     });
     inp.addEventListener('keydown', async e => {
@@ -184,8 +202,8 @@ function initMap() {
         $(id + '-suggest').classList.remove('on');
       } catch (err) { $('err').textContent = err.message; }
     });
-    // delay so a click on a suggestion row registers before the box hides
-    inp.addEventListener('blur', () => setTimeout(() => $(id + '-suggest').classList.remove('on'), 150));
+    // 300ms so a tap on a suggestion row can fire click before we hide the box
+    inp.addEventListener('blur', () => setTimeout(() => $(id + '-suggest').classList.remove('on'), 300));
   });
 
   renderRecent();
@@ -257,9 +275,8 @@ async function searchSuggest(which) {
     for (const it of arr) {
       const row = document.createElement('div');
       row.textContent = it.display_name;
-      // ponytail: pointerdown fires on mouse, touch, and pen — before the input's blur closes the box
-      row.addEventListener('pointerdown', e => {
-        e.preventDefault();
+      // ponytail: click is universal (mouse/touch/pen); blur handler waits 300ms so this fires first
+      row.addEventListener('click', () => {
         inp.value = it.display_name;
         placePin(which, +it.lat, +it.lon);
         box.classList.remove('on');
